@@ -1,0 +1,90 @@
+name: Build LOS24 kernel (KO_COMPAT)
+
+# 目的：在 LOS 24 (A17) 上出一个"能加载第三方 .ko"的内核
+#   - CONFIG_MODULE_FORCE_LOAD=y      -> insmod -f 可用（CRC 不符降级为警告）
+#   - LOCALVERSION 固定 -qgki-g1d4b7dfb7510 -> vermagic 整串与现网/第三方 .ko 对齐
+#   - MODVERSIONS 保持 y、MODULE_SIG 关、布局保持 896（不动其它选项）
+#   - root/隐藏仍是 BakaSU + SUSFS inline hook
+# 触发：Actions -> Build LOS24 kernel (KO_COMPAT) -> Run workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout build environment
+        uses: actions/checkout@v4
+
+      - name: Install wiggle (patch_kernel.sh 依赖)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wiggle
+          wiggle --version
+
+      - name: Clone kernel tree (lineage-24.0)
+        run: git clone --depth 1 https://github.com/Gamesmes90/android_kernel_oneplus_sm8350.git -b lineage-24.0
+
+      - name: Download LineageOS ROM (vendor_dlkm 基座)
+        run: bash build.sh lemonadep
+
+      - name: Pin kernel version string
+        # 固定成设备当前运行的串，刷完后与原厂 .ko、第三方 .ko 的 vermagic 全部对齐
+        run: echo "-g1d4b7dfb7510" > android_kernel_oneplus_sm8350/.scmversion
+
+      - name: Clone patch set (BakaSU + SUSFS inline hook)
+        run: git clone --depth 1 https://github.com/Gamesmes90/patches_android_kernel_oneplus_sm8350.git
+
+      - name: Apply patches
+        run: |
+          cd patches_android_kernel_oneplus_sm8350
+          bash patch_kernel.sh ../android_kernel_oneplus_sm8350/ nogit
+          cd ..
+
+      - name: Inject KO_COMPAT config
+        run: bash .github/ko-compat.sh android_kernel_oneplus_sm8350
+
+      - name: Build
+        run: |
+          bash build.sh
+          ls -l build/
+          mv build/kernel-oneplus-sm8350.zip build/kernel-oneplus-sm8350-ko-compat.zip
+
+      - name: Verify (vermagic + 包内容)
+        run: |
+          set -e
+          echo '--- 关键 config ---'
+          grep -E 'CONFIG_MODULE_FORCE_LOAD|CONFIG_MODULE_SIG|CONFIG_MODULE_UNLOAD|CONFIG_MODVERSIONS|^CONFIG_LOCALVERSION' \
+            android_kernel_oneplus_sm8350/out/.config || true
+          echo '--- AK3 包内容 ---'
+          python3 - <<'PY'
+          import zipfile, re, sys
+          z = zipfile.ZipFile('build/kernel-oneplus-sm8350-ko-compat.zip')
+          names = z.namelist()
+          print('entries:', len(names))
+          ok = True
+          for f in ('Image', 'vendor_dlkm.img', 'anykernel.sh'):
+              hit = any(n.endswith(f) for n in names)
+              print(('OK   ' if hit else 'MISS '), f)
+              ok &= hit
+          img = z.read([n for n in names if n.endswith('Image')][0])
+          m = re.search(rb'5\.4\.\d+-qgki-g[0-9a-f]{12}[ -~]{0,60}', img)
+          vm = m.group().decode() if m else 'NOT FOUND'
+          print('vermagic:', vm)
+          if b'5.4.302-qgki-g1d4b7dfb7510' not in (m.group() if m else b''):
+              print('::error::vermagic 不是 5.4.302-qgki-g1d4b7dfb7510，别刷')
+              sys.exit(1)
+          if not ok:
+              print('::error::包内容不完整，别刷')
+              sys.exit(1)
+          PY
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-ko-compat
+          path: build/kernel-oneplus-sm8350-ko-compat.zip
+          retention-days: 30

@@ -1,10 +1,9 @@
 name: Build LOS24 kernel (KO_COMPAT)
 
 # 目的：在 LOS 24 (A17) 上出一个"能加载第三方 .ko"的内核
-#   - CONFIG_MODULE_FORCE_LOAD=y      -> insmod -f 可用（CRC 不符降级为警告）
-#   - LOCALVERSION 固定 -qgki-g1d4b7dfb7510 -> vermagic 整串与现网/第三方 .ko 对齐
-#   - MODVERSIONS 保持 y、MODULE_SIG 关、布局保持 896（不动其它选项）
-#   - root/隐藏仍是 BakaSU + SUSFS inline hook
+#   - CONFIG_MODULE_FORCE_LOAD=y  -> insmod -f 可用（CRC 不符只警告）
+#   - MODULE_SIG 关、MODVERSIONS 保持 y、布局保持 896
+#   - 内核版本串 5.4.302-qgki-g1d4b7dfb7510 由 .scmversion 提供（LOCALVERSION 不动！）
 # 触发：Actions -> Build LOS24 kernel (KO_COMPAT) -> Run workflow
 
 on:
@@ -19,7 +18,7 @@ jobs:
       - name: Checkout build environment
         uses: actions/checkout@v4
 
-      - name: Install wiggle (patch_kernel.sh 依赖)
+      - name: Install wiggle
         run: |
           sudo apt-get update
           sudo apt-get install -y wiggle
@@ -32,7 +31,6 @@ jobs:
         run: bash build.sh lemonadep
 
       - name: Pin kernel version string
-        # 固定成设备当前运行的串，刷完后与原厂 .ko、第三方 .ko 的 vermagic 全部对齐
         run: echo "-g1d4b7dfb7510" > android_kernel_oneplus_sm8350/.scmversion
 
       - name: Clone patch set (BakaSU + SUSFS inline hook)
@@ -45,7 +43,7 @@ jobs:
           cd ..
 
       - name: Inject KO_COMPAT config
-        run: bash .github/ko-compat.sh android_kernel_oneplus_sm8350
+        run: bash .github/ko-compat.sh
 
       - name: Build
         run: |
@@ -53,11 +51,11 @@ jobs:
           ls -l build/
           mv build/kernel-oneplus-sm8350.zip build/kernel-oneplus-sm8350-ko-compat.zip
 
-      - name: Verify (vermagic + 包内容)
+      - name: Verify (vermagic 必须精确、不能有 '+')
         run: |
           set -e
           echo '--- 关键 config ---'
-          grep -E 'CONFIG_MODULE_FORCE_LOAD|CONFIG_MODULE_SIG|CONFIG_MODULE_UNLOAD|CONFIG_MODVERSIONS|^CONFIG_LOCALVERSION' \
+          grep -E 'CONFIG_MODULE_FORCE_LOAD|CONFIG_MODULE_SIG|CONFIG_MODULE_UNLOAD|CONFIG_MODVERSIONS|^CONFIG_LOCALVERSION|LOCALVERSION_AUTO' \
             android_kernel_oneplus_sm8350/out/.config || true
           echo '--- AK3 包内容 ---'
           python3 - <<'PY'
@@ -71,15 +69,14 @@ jobs:
               print(('OK   ' if hit else 'MISS '), f)
               ok &= hit
           img = z.read([n for n in names if n.endswith('Image')][0])
-          m = re.search(rb'5\.4\.\d+-qgki-g[0-9a-f]{12}[ -~]{0,60}', img)
-          vm = m.group().decode() if m else 'NOT FOUND'
-          print('vermagic:', vm)
-          if b'5.4.302-qgki-g1d4b7dfb7510' not in (m.group() if m else b''):
-              print('::error::vermagic 不是 5.4.302-qgki-g1d4b7dfb7510，别刷')
+          want = b'5.4.302-qgki-g1d4b7dfb7510 SMP preempt mod_unload modversions aarch64'
+          bad = b'5.4.302-qgki-g1d4b7dfb7510+'
+          print('精确 vermagic 命中:', want in img)
+          print('带加号(必须为 False):', bad in img)
+          if not ok or want not in img or bad in img:
+              print('::error::vermagic 不对或包不完整，不要刷这个包')
               sys.exit(1)
-          if not ok:
-              print('::error::包内容不完整，别刷')
-              sys.exit(1)
+          print('::notice::vermagic 精确匹配，包内容完整')
           PY
 
       - name: Upload artifact

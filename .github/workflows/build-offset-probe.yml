@@ -1,0 +1,53 @@
+name: Probe struct offsets
+
+# 目的：用目标内核（lineage-24.0 + 5.4.302）的源码和配置，编译一个打印
+# struct mm_struct 字段偏移的小模块，产物 probe.ko 用于在手机上 insmod 取值。
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout build environment
+        uses: actions/checkout@v4
+
+      - name: Clone kernel tree
+        run: git clone --depth 1 -b lineage-24.0 https://github.com/Gamesmes90/android_kernel_oneplus_sm8350.git
+
+      - name: Pin kernel version string
+        run: echo "-g1d4b7dfb7510" > android_kernel_oneplus_sm8350/.scmversion
+
+      - name: Download clang
+        run: |
+          mkdir -p tc
+          curl -fL --retry 3 -o tc/clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-security-17.0.0_r2/clang-r596125.tar.gz"
+          tar -xzf tc/clang.tar.gz -C tc
+          tc/bin/clang --version | head -1
+
+      - name: Configure and prepare
+        run: |
+          export PATH="$PWD/tc/bin:$PATH"
+          cd android_kernel_oneplus_sm8350
+          make O=out ARCH=arm64 LLVM=1 CC=clang vendor/lahaina-qgki_defconfig
+          make O=out ARCH=arm64 LLVM=1 CC=clang olddefconfig
+          make O=out ARCH=arm64 LLVM=1 CC=clang modules_prepare
+
+      - name: Build probe module
+        run: |
+          export PATH="$PWD/tc/bin:$PATH"
+          cd android_kernel_oneplus_sm8350
+          make O=out ARCH=arm64 LLVM=1 CC=clang M="$GITHUB_WORKSPACE/probe" modules
+          ls -l "$GITHUB_WORKSPACE/probe"
+
+      - name: Show vermagic
+        run: |
+          strings probe/probe.ko | grep -E '^vermagic=' || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe-ko
+          path: probe/*.ko
+          retention-days: 14

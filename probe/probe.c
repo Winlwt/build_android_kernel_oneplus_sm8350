@@ -1,10 +1,11 @@
-// 探测模块：在目标内核上打印 struct mm_struct 的关键字段偏移
-// 加载后会立即返回 -EINVAL 自行卸载，只在 dmesg 留下结果
+// 探测模块：打印目标内核里 struct mm_struct / task_struct / file 的关键字段偏移
+// 加载后立即返回 -EINVAL 自行卸载，只在 dmesg 留结果
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/mm_types.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
+#include <linux/fs.h>
 
 static int __init probe_init(void)
 {
